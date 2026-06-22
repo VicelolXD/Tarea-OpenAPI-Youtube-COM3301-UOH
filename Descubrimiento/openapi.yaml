@@ -1,0 +1,355 @@
+openapi: 3.0.3
+info:
+  title: Descubrimiento y Personalización
+  version: "1.0.0"
+  description: >
+    Bounded context responsable de ayudar al usuario a encontrar contenido
+    relevante: búsqueda, feeds personalizados, contenido relacionado,
+    tendencias y exploración por categoría.
+
+    Aquí el "video" es un candidato de ranking (IndexEntry): una
+    representación liviana del ítem de catálogo (referenciado solo por
+    `catalogItemId`) enriquecida con señales de relevancia y popularidad.
+    Este contexto NO almacena la metadata editorial completa ni decide
+    reglas de visibilidad — siempre respeta lo que indique Catálogo.
+
+    El ranking, la personalización y el cálculo de tendencias son
+    responsabilidad EXCLUSIVA de este contexto.
+
+tags:
+  - name: Search
+    description: Búsqueda de contenido y canales (RF-D1)
+  - name: Feed
+    description: Feeds personalizados (RF-D2)
+  - name: Related
+    description: Contenido relacionado (RF-D3)
+  - name: Trending
+    description: Tendencias y exploración (RF-D4)
+  - name: Signals
+    description: Captura de señales de interacción (RF-D5)
+  - name: Index
+    description: Indexación de contenido (RF-D6)
+
+servers:
+  - url: https://api.youtube-clone.internal/descubrimiento/v1
+
+security:
+  - bearerAuth: []
+
+paths:
+  /search:
+    get:
+      tags: [Search]
+      summary: Buscar contenido por texto libre (RF-D1)
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: type
+          in: query
+          schema: { type: string, enum: [video, channel, all], default: all }
+        - name: durationFilter
+          in: query
+          schema: { type: string, enum: [short, medium, long] }
+        - name: uploadedAfter
+          in: query
+          schema: { type: string, format: date }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [relevance, date, popularity], default: relevance }
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Resultados de búsqueda
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResultPage" }
+
+  /search/suggestions:
+    get:
+      tags: [Search]
+      summary: Sugerencias mientras el usuario escribe (RF-D1)
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Lista de sugerencias
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /feed:
+    get:
+      tags: [Feed]
+      summary: Obtener el feed de inicio personalizado (RF-D2)
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: sessionId
+          in: query
+          description: Para usuarios no autenticados
+          schema: { type: string }
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Feed paginado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedPage" }
+
+  /catalog-items/{catalogItemId}/related:
+    get:
+      tags: [Related]
+      summary: Obtener videos relacionados a un contenido (RF-D3)
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Lista de ítems relacionados
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RankedItem" }
+
+  /trending:
+    get:
+      tags: [Trending]
+      summary: Obtener contenido en tendencia (RF-D4)
+      parameters:
+        - name: region
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Lista de ítems en tendencia
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RankedItem" }
+
+  /explore/categories:
+    get:
+      tags: [Trending]
+      summary: Listar categorías disponibles para explorar (RF-D4)
+      responses:
+        "200":
+          description: Categorías
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /explore/categories/{category}:
+    get:
+      tags: [Trending]
+      summary: Explorar contenido por categoría (RF-D4)
+      parameters:
+        - name: category
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Ítems de la categoría
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedPage" }
+
+  /signals/impressions:
+    post:
+      tags: [Signals]
+      summary: Registrar que un usuario vio un ítem en un feed (RF-D5)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImpressionInput" }
+      responses:
+        "201": { description: Impresión registrada }
+
+  /signals/clicks:
+    post:
+      tags: [Signals]
+      summary: Registrar click en un ítem recomendado (RF-D5)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClickInput" }
+      responses:
+        "201": { description: Click registrado }
+
+  /users/{userId}/interest-profile:
+    get:
+      tags: [Signals]
+      summary: Consultar el perfil de intereses de un usuario (RF-D5)
+      description: >
+        Uso principalmente interno/debug; útil para explicar por qué se
+        recomendó un ítem (RF-D2).
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Perfil de intereses
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InterestProfile" }
+
+  /index/entries:
+    post:
+      tags: [Index]
+      summary: Indexar un contenido (RF-D6)
+      description: >
+        Normalmente disparado automáticamente al consumir el evento
+        `catalog.item.published` desde Catálogo. Expuesto también para
+        reindexación manual.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IndexEntry" }
+      responses:
+        "201": { description: Entrada indexada }
+
+  /index/entries/{catalogItemId}:
+    delete:
+      tags: [Index]
+      summary: Remover un ítem del índice (RF-D6)
+      description: >
+        Disparado al consumir `catalog.item.unpublished` o un evento de
+        restricción aplicada desde Catálogo.
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      responses:
+        "204": { description: Entrada removida del índice }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    catalogItemId:
+      name: catalogItemId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    page:
+      name: page
+      in: query
+      schema: { type: integer, default: 1 }
+    pageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, default: 20, maximum: 100 }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+
+    RankedItem:
+      type: object
+      description: >
+        Referencia liviana a contenido, NO la metadata editorial completa
+        (eso se consulta a Catálogo si se necesita).
+      properties:
+        catalogItemId: { type: string, format: uuid }
+        score: { type: number, format: float }
+        reason:
+          type: string
+          description: Explicación interna, ej. "porque viste X"
+          nullable: true
+
+    SearchResultPage:
+      type: object
+      properties:
+        videos:
+          type: array
+          items: { $ref: "#/components/schemas/RankedItem" }
+        channels:
+          type: array
+          items:
+            type: object
+            properties:
+              channelId: { type: string, format: uuid }
+              score: { type: number, format: float }
+        page: { type: integer }
+        pageSize: { type: integer }
+        totalItems: { type: integer }
+
+    FeedPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/RankedItem" }
+        page: { type: integer }
+        pageSize: { type: integer }
+
+    ImpressionInput:
+      type: object
+      required: [catalogItemId, surface]
+      properties:
+        userId: { type: string, format: uuid, nullable: true }
+        sessionId: { type: string }
+        catalogItemId: { type: string, format: uuid }
+        surface:
+          type: string
+          enum: [home_feed, search, related, trending]
+
+    ClickInput:
+      type: object
+      required: [catalogItemId, surface]
+      properties:
+        userId: { type: string, format: uuid, nullable: true }
+        sessionId: { type: string }
+        catalogItemId: { type: string, format: uuid }
+        surface:
+          type: string
+          enum: [home_feed, search, related, trending]
+
+    InterestProfile:
+      type: object
+      properties:
+        userId: { type: string, format: uuid }
+        topCategories:
+          type: array
+          items: { type: string }
+        updatedAt: { type: string, format: date-time }
+
+    IndexEntry:
+      type: object
+      properties:
+        catalogItemId: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        title: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        category: { type: string }
+        publishedAt: { type: string, format: date-time }
