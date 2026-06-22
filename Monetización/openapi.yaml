@@ -1,0 +1,542 @@
+openapi: 3.0.3
+info:
+  title: Monetización del Ecosistema Creador
+  version: "1.0.0"
+  description: >
+    Bounded context responsable de cómo los creadores ganan dinero: cobra
+    y paga en el ecosistema creador-espectador (publicidad, membresías,
+    propinas) y reparte ese ingreso al creador.
+
+    Aquí el "video" es una UNIDAD MONETIZABLE: una referencia
+    (`catalogItemId`) con un estado de elegibilidad y un acumulado de
+    eventos de ingreso, no el archivo técnico ni el ítem editorial.
+
+    Este contexto NO negocia con anunciantes ni decide qué anuncio se
+    muestra (eso es Publicidad) — solo recibe el ingreso publicitario ya
+    confirmado y lo reparte. Tampoco crea campañas ni recomienda videos.
+
+tags:
+  - name: Eligibility
+    description: Alta y elegibilidad (RF-M1)
+  - name: CreatorProducts
+    description: Membresías y propinas (RF-M2)
+  - name: Revenue
+    description: Registro de ingresos (RF-M3)
+  - name: Earnings
+    description: Consulta de ganancias (RF-M4)
+  - name: Payouts
+    description: Pagos al creador (RF-M5)
+
+servers:
+  - url: https://api.youtube-clone.internal/monetizacion/v1
+
+security:
+  - bearerAuth: []
+
+paths:
+  /channels/{channelId}/monetization/apply:
+    post:
+      tags: [Eligibility]
+      summary: Solicitar monetizar un canal (RF-M1)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      responses:
+        "201":
+          description: Solicitud creada, evaluación en curso
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonetizationStatus" }
+
+  /channels/{channelId}/monetization/status:
+    get:
+      tags: [Eligibility]
+      summary: Consultar el estado de elegibilidad (RF-M1)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      responses:
+        "200":
+          description: Estado actual (apto, pendiente, rechazado)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonetizationStatus" }
+
+  /channels/{channelId}/monetization/enable:
+    post:
+      tags: [Eligibility]
+      summary: Activar monetización a nivel canal (RF-M1)
+      description: Emite el evento `monetization.enabled`.
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      responses:
+        "200": { description: Monetización activada }
+
+  /channels/{channelId}/monetization/disable:
+    post:
+      tags: [Eligibility]
+      summary: Desactivar monetización a nivel canal (RF-M1)
+      description: Emite el evento `monetization.disabled`.
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      responses:
+        "200": { description: Monetización desactivada }
+
+  /catalog-items/{catalogItemId}/monetization:
+    patch:
+      tags: [Eligibility]
+      summary: Activar o desactivar monetización a nivel de contenido (RF-M1)
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200": { description: Estado actualizado }
+
+  /channels/{channelId}/membership-tiers:
+    post:
+      tags: [CreatorProducts]
+      summary: Definir un nivel de membresía de canal (RF-M2)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MembershipTierInput" }
+      responses:
+        "201":
+          description: Nivel creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MembershipTier" }
+    get:
+      tags: [CreatorProducts]
+      summary: Listar niveles de membresía de un canal (RF-M2)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      responses:
+        "200":
+          description: Niveles disponibles
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MembershipTier" }
+
+  /memberships:
+    post:
+      tags: [CreatorProducts]
+      summary: Registrar la compra de una membresía (RF-M2)
+      description: >
+        Disparado cuando un espectador compra una membresía. Genera un
+        RevenueEvent en estado `pending`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [viewerId, tierId]
+              properties:
+                viewerId: { type: string, format: uuid }
+                tierId: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Membresía registrada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Membership" }
+
+  /tips:
+    post:
+      tags: [CreatorProducts]
+      summary: Registrar una propina en un video (RF-M2)
+      description: Genera un RevenueEvent en estado `pending`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [viewerId, catalogItemId, amount, currency]
+              properties:
+                viewerId: { type: string, format: uuid }
+                catalogItemId: { type: string, format: uuid }
+                amount: { type: number, format: float }
+                currency: { type: string, example: "CLP" }
+      responses:
+        "201":
+          description: Propina registrada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tip" }
+
+  /revenue-events:
+    post:
+      tags: [Revenue]
+      summary: Registrar un evento de ingreso (RF-M3)
+      description: >
+        Uso principalmente interno: se invoca al consumir eventos de
+        ingreso publicitario confirmado (desde Publicidad) o desde
+        membresías/propinas de este mismo contexto.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RevenueEventInput" }
+      responses:
+        "201":
+          description: Evento de ingreso registrado en estado pending
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevenueEvent" }
+
+  /revenue-events/{revenueEventId}:
+    get:
+      tags: [Revenue]
+      summary: Consultar un evento de ingreso (RF-M3)
+      parameters:
+        - $ref: "#/components/parameters/revenueEventId"
+      responses:
+        "200":
+          description: Detalle del evento
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevenueEvent" }
+
+  /revenue-events/{revenueEventId}/confirm:
+    post:
+      tags: [Revenue]
+      summary: Confirmar un evento de ingreso aplicando reglas de reparto (RF-M3)
+      description: >
+        Cambia el estado de `pending` a `confirmed`, aplica el revenue
+        share y acredita el saldo del creador. Emite el evento
+        `revenue.attributed`.
+      parameters:
+        - $ref: "#/components/parameters/revenueEventId"
+      responses:
+        "200":
+          description: Evento confirmado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevenueEvent" }
+
+  /channels/{channelId}/earnings:
+    get:
+      tags: [Earnings]
+      summary: Consultar ganancias por periodo (RF-M4)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Resumen de ganancias del periodo
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EarningsSummary" }
+
+  /channels/{channelId}/earnings/breakdown:
+    get:
+      tags: [Earnings]
+      summary: Desglose por video y fuente de ingreso (RF-M4)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Desglose con métricas (ej. RPM)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EarningsBreakdownItem" }
+
+  /channels/{channelId}/earnings/reports:
+    post:
+      tags: [Earnings]
+      summary: Generar un reporte exportable para el creador (RF-M4)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                from: { type: string, format: date }
+                to: { type: string, format: date }
+                format: { type: string, enum: [csv, pdf], default: csv }
+      responses:
+        "202":
+          description: Reporte en generación
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reportId: { type: string, format: uuid }
+                  status: { type: string, enum: [processing, ready] }
+
+  /channels/{channelId}/balance:
+    get:
+      tags: [Payouts]
+      summary: Consultar saldo disponible del creador (RF-M5)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      responses:
+        "200":
+          description: Saldo actual
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Balance" }
+
+  /channels/{channelId}/payouts:
+    post:
+      tags: [Payouts]
+      summary: Solicitar retiro de saldo (RF-M5)
+      description: >
+        Solo permitido si el saldo supera el mínimo configurado. Emite el
+        evento `payout.processed` al completarse.
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: { type: number, format: float }
+      responses:
+        "201":
+          description: Solicitud de pago creada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Payout" }
+        "409":
+          description: Saldo insuficiente o bajo el mínimo de retiro
+    get:
+      tags: [Payouts]
+      summary: Consultar historial de pagos realizados (RF-M5)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Historial paginado
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Payout" }
+
+  /channels/{channelId}/tax-documents:
+    post:
+      tags: [Payouts]
+      summary: Registrar documentación fiscal requerida para cobrar (RF-M5)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaxDocumentInput" }
+      responses:
+        "201": { description: Documento registrado }
+    get:
+      tags: [Payouts]
+      summary: Listar documentación fiscal del creador (RF-M5)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      responses:
+        "200":
+          description: Documentos registrados
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TaxDocumentInput" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    channelId:
+      name: channelId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    catalogItemId:
+      name: catalogItemId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    revenueEventId:
+      name: revenueEventId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    page:
+      name: page
+      in: query
+      schema: { type: integer, default: 1 }
+    pageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, default: 20, maximum: 100 }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+
+    MonetizationStatus:
+      type: object
+      properties:
+        channelId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [not_applied, pending, eligible, rejected, enabled, disabled]
+        evaluatedAt: { type: string, format: date-time }
+
+    MembershipTierInput:
+      type: object
+      required: [name, price, currency]
+      properties:
+        name: { type: string }
+        price: { type: number, format: float }
+        currency: { type: string }
+        benefits:
+          type: array
+          items: { type: string }
+
+    MembershipTier:
+      allOf:
+        - $ref: "#/components/schemas/MembershipTierInput"
+        - type: object
+          properties:
+            tierId: { type: string, format: uuid }
+            channelId: { type: string, format: uuid }
+
+    Membership:
+      type: object
+      properties:
+        membershipId: { type: string, format: uuid }
+        viewerId: { type: string, format: uuid }
+        tierId: { type: string, format: uuid }
+        startedAt: { type: string, format: date-time }
+        revenueEventId: { type: string, format: uuid }
+
+    Tip:
+      type: object
+      properties:
+        tipId: { type: string, format: uuid }
+        viewerId: { type: string, format: uuid }
+        catalogItemId: { type: string, format: uuid }
+        amount: { type: number, format: float }
+        currency: { type: string }
+        revenueEventId: { type: string, format: uuid }
+
+    RevenueEventInput:
+      type: object
+      required: [channelId, source, amount, currency]
+      properties:
+        channelId: { type: string, format: uuid }
+        catalogItemId: { type: string, format: uuid, nullable: true }
+        source:
+          type: string
+          enum: [advertising, membership, tip]
+        amount: { type: number, format: float }
+        currency: { type: string }
+        externalReference:
+          type: string
+          description: ID del evento original (ej. impressionId de Publicidad)
+          nullable: true
+
+    RevenueEvent:
+      allOf:
+        - $ref: "#/components/schemas/RevenueEventInput"
+        - type: object
+          properties:
+            revenueEventId: { type: string, format: uuid }
+            status:
+              type: string
+              enum: [pending, confirmed, paid]
+            creatorShareAmount: { type: number, format: float, nullable: true }
+            createdAt: { type: string, format: date-time }
+
+    EarningsSummary:
+      type: object
+      properties:
+        channelId: { type: string, format: uuid }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        totalEarnings: { type: number, format: float }
+        currency: { type: string }
+
+    EarningsBreakdownItem:
+      type: object
+      properties:
+        catalogItemId: { type: string, format: uuid, nullable: true }
+        source:
+          type: string
+          enum: [advertising, membership, tip]
+        amount: { type: number, format: float }
+        rpm:
+          type: number
+          format: float
+          nullable: true
+
+    Balance:
+      type: object
+      properties:
+        channelId: { type: string, format: uuid }
+        availableAmount: { type: number, format: float }
+        currency: { type: string }
+        minimumPayoutAmount: { type: number, format: float }
+
+    Payout:
+      type: object
+      properties:
+        payoutId: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        amount: { type: number, format: float }
+        currency: { type: string }
+        status:
+          type: string
+          enum: [requested, processing, paid, failed]
+        requestedAt: { type: string, format: date-time }
+        paidAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    TaxDocumentInput:
+      type: object
+      properties:
+        documentType: { type: string, example: "boleta_honorarios" }
+        documentUrl: { type: string, format: uri }
+        country: { type: string }
