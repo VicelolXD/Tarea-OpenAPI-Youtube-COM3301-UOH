@@ -1,0 +1,470 @@
+openapi: 3.0.3
+info:
+  title: Publicación y Distribución de Contenido
+  version: "1.0.0"
+  description: >
+    Bounded context responsable del ciclo de vida TÉCNICO del video: subida,
+    procesamiento (transcoding), almacenamiento, reproducción y transmisión
+    en vivo.
+
+    Este contexto conoce el video como archivo/stream, no como producto
+    editorial: no decide si el video es visible al público ni gestiona
+    metadata visible (título, descripción, tags, categoría). Esa
+    responsabilidad pertenece al contexto de Catálogo editorial y derechos.
+
+    Cuando un asset técnico termina de procesarse, este contexto emite el
+    evento `video.asset.ready_for_publishing` para que Catálogo decida si
+    y cómo publicarlo editorialmente.
+
+tags:
+  - name: Uploads
+    description: Gestión de subida de video (RF-P1)
+  - name: Processing
+    description: Procesamiento técnico / transcoding (RF-P2)
+  - name: Playback
+    description: Reproducción y sesiones de visualización (RF-P3)
+  - name: Live
+    description: Transmisión en vivo (RF-P4)
+  - name: Assets
+    description: Consulta de assets técnicos (RF-P5)
+
+servers:
+  - url: https://api.youtube-clone.internal/publicacion/v1
+
+security:
+  - bearerAuth: []
+
+paths:
+  /uploads:
+    post:
+      tags: [Uploads]
+      summary: Iniciar una subida de video (RF-P1)
+      description: >
+        Solo puede ser ejecutado por un creador autenticado. Crea una
+        UploadSession en estado `uploading` y devuelve la URL/credenciales
+        para subir el archivo (completo o por partes).
+      responses:
+        "201":
+          description: Sesión de subida creada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /uploads/{uploadId}/parts:
+    put:
+      tags: [Uploads]
+      summary: Subir una parte del archivo (subida por partes) (RF-P1)
+      parameters:
+        - $ref: "#/components/parameters/uploadId"
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Parte recibida correctamente
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /uploads/{uploadId}/status:
+    get:
+      tags: [Uploads]
+      summary: Consultar el estado/progreso de una subida (RF-P1)
+      parameters:
+        - $ref: "#/components/parameters/uploadId"
+      responses:
+        "200":
+          description: Estado actual de la subida
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadSession"
+
+  /uploads/{uploadId}/cancel:
+    post:
+      tags: [Uploads]
+      summary: Cancelar una subida en curso (RF-P1)
+      parameters:
+        - $ref: "#/components/parameters/uploadId"
+      responses:
+        "200":
+          description: Subida cancelada
+        "409":
+          description: La subida ya no puede cancelarse (ya finalizó o ya se canceló)
+
+  /uploads/{uploadId}/complete:
+    post:
+      tags: [Uploads]
+      summary: Finalizar y validar una subida (RF-P1)
+      description: >
+        Valida que todas las partes fueron recibidas correctamente. Si la
+        validación es exitosa, crea un VideoAsset y dispara automáticamente
+        un ProcessingJob (RF-P2).
+      parameters:
+        - $ref: "#/components/parameters/uploadId"
+      responses:
+        "200":
+          description: Subida validada; se creó el VideoAsset y comenzó el procesamiento
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoAsset"
+        "422":
+          description: La subida está incompleta o corrupta
+
+  /video-assets/{videoAssetId}/processing:
+    get:
+      tags: [Processing]
+      summary: Consultar el estado del procesamiento técnico (RF-P2)
+      parameters:
+        - $ref: "#/components/parameters/videoAssetId"
+      responses:
+        "200":
+          description: Estado del job de procesamiento
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessingJob"
+
+  /video-assets/{videoAssetId}/processing/retry:
+    post:
+      tags: [Processing]
+      summary: Reintentar un procesamiento fallido (RF-P2)
+      parameters:
+        - $ref: "#/components/parameters/videoAssetId"
+      responses:
+        "202":
+          description: Reintento aceptado
+        "409":
+          description: El procesamiento no está en estado `failed`
+
+  /video-assets/{videoAssetId}/playback-info:
+    get:
+      tags: [Playback]
+      summary: Obtener información necesaria para reproducir (RF-P3)
+      description: >
+        Devuelve las URLs/manifests adaptados según dispositivo, ancho de
+        banda y región del solicitante.
+      parameters:
+        - $ref: "#/components/parameters/videoAssetId"
+        - name: device
+          in: query
+          schema: { type: string }
+        - name: bandwidthKbps
+          in: query
+          schema: { type: integer }
+        - name: region
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Información de reproducción
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaybackInfo"
+        "403":
+          description: El asset no está técnicamente disponible para reproducción
+
+  /playback-sessions:
+    post:
+      tags: [Playback]
+      summary: Registrar el inicio de una sesión de reproducción (RF-P3)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [videoAssetId]
+              properties:
+                videoAssetId: { type: string, format: uuid }
+                deviceType: { type: string }
+      responses:
+        "201":
+          description: Sesión creada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaybackSession"
+
+  /playback-sessions/{sessionId}:
+    patch:
+      tags: [Playback]
+      summary: Actualizar progreso de una sesión de reproducción (RF-P3)
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                watchedSeconds: { type: integer }
+                qualityUsed: { type: string }
+                interruptions: { type: integer }
+      responses:
+        "200":
+          description: Progreso actualizado
+
+  /playback-sessions/{sessionId}/complete:
+    post:
+      tags: [Playback]
+      summary: Marcar una sesión de reproducción como finalizada (RF-P3)
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Sesión finalizada; se emite evento `playback.session.completed`
+
+  /live-streams:
+    post:
+      tags: [Live]
+      summary: Configurar una transmisión en vivo (RF-P4)
+      responses:
+        "201":
+          description: Live creado, en estado `configured`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveStream"
+
+  /live-streams/{liveStreamId}/ingest:
+    get:
+      tags: [Live]
+      summary: Obtener datos de conexión para emitir (ej. OBS) (RF-P4)
+      parameters:
+        - $ref: "#/components/parameters/liveStreamId"
+      responses:
+        "200":
+          description: Credenciales/URL de ingest (RTMP/SRT, stream key)
+
+  /live-streams/{liveStreamId}/start:
+    post:
+      tags: [Live]
+      summary: Iniciar la transmisión (RF-P4)
+      parameters:
+        - $ref: "#/components/parameters/liveStreamId"
+      responses:
+        "200": { description: Transmisión iniciada }
+
+  /live-streams/{liveStreamId}/pause:
+    post:
+      tags: [Live]
+      summary: Pausar la transmisión (RF-P4)
+      parameters:
+        - $ref: "#/components/parameters/liveStreamId"
+      responses:
+        "200": { description: Transmisión pausada }
+
+  /live-streams/{liveStreamId}/end:
+    post:
+      tags: [Live]
+      summary: Finalizar la transmisión y generar VOD (RF-P4)
+      description: >
+        Al finalizar, genera automáticamente un VideoAsset on-demand
+        reutilizable a partir de la grabación.
+      parameters:
+        - $ref: "#/components/parameters/liveStreamId"
+      responses:
+        "200":
+          description: Transmisión finalizada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recordedVideoAssetId: { type: string, format: uuid }
+
+  /creators/{creatorId}/video-assets:
+    get:
+      tags: [Assets]
+      summary: Listar los contenidos técnicos de un creador (RF-P5)
+      parameters:
+        - name: creatorId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Listado paginado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoAssetPage"
+
+  /video-assets/{videoAssetId}:
+    get:
+      tags: [Assets]
+      summary: Consultar el detalle técnico de un asset (RF-P5)
+      parameters:
+        - $ref: "#/components/parameters/videoAssetId"
+      responses:
+        "200":
+          description: Detalle técnico
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoAsset"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    uploadId:
+      name: uploadId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    videoAssetId:
+      name: videoAssetId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    liveStreamId:
+      name: liveStreamId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    page:
+      name: page
+      in: query
+      schema: { type: integer, default: 1 }
+    pageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, default: 20, maximum: 100 }
+
+  responses:
+    Unauthorized:
+      description: No autenticado
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
+
+    UploadSession:
+      type: object
+      properties:
+        uploadId: { type: string, format: uuid }
+        creatorId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [uploading, completed, cancelled, failed_validation]
+        bytesUploaded: { type: integer }
+        totalBytes: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    VideoAsset:
+      type: object
+      description: >
+        El video como archivo/stream técnico. NO contiene título,
+        descripción ni tags: esa metadata vive en el contexto de Catálogo.
+      properties:
+        videoAssetId: { type: string, format: uuid }
+        creatorId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, processing, ready, failed]
+        durationSeconds: { type: number }
+        renditions:
+          type: array
+          items: { $ref: "#/components/schemas/Rendition" }
+        createdAt: { type: string, format: date-time }
+
+    Rendition:
+      type: object
+      properties:
+        quality: { type: string, example: "720p" }
+        codec: { type: string, example: "h264" }
+        bitrateKbps: { type: integer }
+        url: { type: string, format: uri }
+
+    ProcessingJob:
+      type: object
+      properties:
+        jobId: { type: string, format: uuid }
+        videoAssetId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, in_progress, completed, failed]
+        retryCount: { type: integer }
+        updatedAt: { type: string, format: date-time }
+
+    PlaybackInfo:
+      type: object
+      properties:
+        videoAssetId: { type: string, format: uuid }
+        manifestUrl: { type: string, format: uri }
+        availableQualities:
+          type: array
+          items: { type: string }
+
+    PlaybackSession:
+      type: object
+      properties:
+        sessionId: { type: string, format: uuid }
+        videoAssetId: { type: string, format: uuid }
+        viewerId: { type: string, format: uuid }
+        startedAt: { type: string, format: date-time }
+        watchedSeconds: { type: integer }
+        qualityUsed: { type: string }
+        interruptions: { type: integer }
+        status:
+          type: string
+          enum: [active, completed]
+
+    LiveStream:
+      type: object
+      properties:
+        liveStreamId: { type: string, format: uuid }
+        creatorId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [configured, live, paused, ended]
+        ingestUrl: { type: string }
+        streamKey: { type: string }
+        recordedVideoAssetId:
+          type: string
+          format: uuid
+          nullable: true
+
+    VideoAssetPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/VideoAsset" }
+        page: { type: integer }
+        pageSize: { type: integer }
+        totalItems: { type: integer }
