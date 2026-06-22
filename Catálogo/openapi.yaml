@@ -1,0 +1,588 @@
+openapi: 3.0.3
+info:
+  title: Catálogo Editorial y Derechos
+  version: "1.0.0"
+  description: >
+    Bounded context responsable de definir QUÉ contenido existe
+    públicamente, cómo se presenta y bajo qué reglas puede mostrarse
+    (legal, territorial, etaria, moderación).
+
+    Aquí el "video" es un ítem de catálogo (CatalogItem): metadata
+    editorial (título, descripción, tags, categoría, miniatura) más reglas
+    de visibilidad. NO es el archivo/stream técnico — ese vive en el
+    contexto de Publicación y se referencia solo por `videoAssetId`.
+
+    Un CatalogItem puede existir en estado borrador sin estar publicado, y
+    puede estar técnicamente listo (avisado por Publicación) sin que el
+    creador haya completado su metadata editorial todavía.
+
+    Cuando un ítem pasa a publicado/despublicado, este contexto emite
+    eventos consumidos por Descubrimiento, Monetización y Publicidad.
+
+tags:
+  - name: Channels
+    description: Gestión de canales (RF-C1)
+  - name: CatalogItems
+    description: Creación y edición editorial (RF-C2)
+  - name: Publishing
+    description: Publicación y visibilidad (RF-C3)
+  - name: Playlists
+    description: Colecciones ordenadas de contenido (RF-C4)
+  - name: Rights
+    description: Reclamaciones de derechos (RF-C5)
+  - name: Policy
+    description: Políticas y restricciones (RF-C6)
+
+servers:
+  - url: https://api.youtube-clone.internal/catalogo/v1
+
+security:
+  - bearerAuth: []
+
+paths:
+  /channels:
+    post:
+      tags: [Channels]
+      summary: Crear un canal asociado a un creador (RF-C1)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [creatorId, name]
+              properties:
+                creatorId: { type: string, format: uuid }
+                name: { type: string }
+                description: { type: string }
+      responses:
+        "201":
+          description: Canal creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+
+  /channels/{channelId}:
+    get:
+      tags: [Channels]
+      summary: Consultar información pública de un canal (RF-C1)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      responses:
+        "200":
+          description: Datos del canal
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+    patch:
+      tags: [Channels]
+      summary: Actualizar información pública de un canal (RF-C1)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                imageUrl: { type: string, format: uri }
+      responses:
+        "200":
+          description: Canal actualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+
+  /channels/{channelId}/catalog-items:
+    get:
+      tags: [Channels]
+      summary: Listar el contenido publicado de un canal (RF-C1)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Listado paginado de ítems publicados
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CatalogItemPage" }
+
+  /catalog-items:
+    post:
+      tags: [CatalogItems]
+      summary: Vincular un asset técnico con metadata editorial (RF-C2)
+      description: >
+        Normalmente disparado automáticamente al recibir el evento
+        `video.asset.ready_for_publishing` desde Publicación, o creado
+        manualmente por el creador antes de que el asset esté listo. Crea
+        el CatalogItem en estado `draft`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channelId, videoAssetId]
+              properties:
+                channelId: { type: string, format: uuid }
+                videoAssetId: { type: string, format: uuid }
+                title: { type: string }
+                description: { type: string }
+                tags:
+                  type: array
+                  items: { type: string }
+                category: { type: string }
+                thumbnailUrl: { type: string, format: uri }
+      responses:
+        "201":
+          description: CatalogItem creado en estado draft
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CatalogItem" }
+
+  /catalog-items/{catalogItemId}:
+    get:
+      tags: [CatalogItems]
+      summary: Consultar un ítem de catálogo (RF-C2)
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      responses:
+        "200":
+          description: Detalle del ítem
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CatalogItem" }
+    patch:
+      tags: [CatalogItems]
+      summary: Editar metadata de contenido existente (RF-C2)
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                tags:
+                  type: array
+                  items: { type: string }
+                category: { type: string }
+                thumbnailUrl: { type: string, format: uri }
+      responses:
+        "200":
+          description: Metadata actualizada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CatalogItem" }
+
+  /catalog-items/{catalogItemId}/publish:
+    post:
+      tags: [Publishing]
+      summary: Publicar un contenido (RF-C3)
+      description: >
+        Hace el contenido disponible según las reglas de visibilidad
+        vigentes. Emite el evento `catalog.item.published`.
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      responses:
+        "200":
+          description: Contenido publicado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CatalogItem" }
+        "409":
+          description: El ítem no puede publicarse (ej. restricción activa o metadata incompleta)
+
+  /catalog-items/{catalogItemId}/unpublish:
+    post:
+      tags: [Publishing]
+      summary: Despublicar u ocultar contenido (RF-C3)
+      description: Emite el evento `catalog.item.unpublished`.
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      responses:
+        "200":
+          description: Contenido despublicado
+
+  /catalog-items/{catalogItemId}/visibility:
+    get:
+      tags: [Publishing]
+      summary: Consultar si un contenido es visible para un usuario (RF-C3)
+      description: >
+        Consulta síncrona usada por otros contextos (Descubrimiento,
+        Publicación) para validar visibilidad antes de mostrar/reproducir.
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+        - name: country
+          in: query
+          schema: { type: string }
+        - name: viewerAge
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Resultado de visibilidad
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VisibilityResult" }
+
+  /playlists:
+    post:
+      tags: [Playlists]
+      summary: Crear una colección ordenada de contenidos (RF-C4)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channelId, title]
+              properties:
+                channelId: { type: string, format: uuid }
+                title: { type: string }
+      responses:
+        "201":
+          description: Playlist creada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Playlist" }
+
+  /playlists/{playlistId}:
+    get:
+      tags: [Playlists]
+      summary: Consultar una playlist con su orden (RF-C4)
+      parameters:
+        - $ref: "#/components/parameters/playlistId"
+      responses:
+        "200":
+          description: Playlist con sus ítems ordenados
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Playlist" }
+
+  /playlists/{playlistId}/items:
+    post:
+      tags: [Playlists]
+      summary: Agregar un ítem a la playlist (RF-C4)
+      parameters:
+        - $ref: "#/components/parameters/playlistId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [catalogItemId]
+              properties:
+                catalogItemId: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Ítem agregado
+
+  /playlists/{playlistId}/items/{catalogItemId}:
+    delete:
+      tags: [Playlists]
+      summary: Quitar un ítem de la playlist (RF-C4)
+      parameters:
+        - $ref: "#/components/parameters/playlistId"
+        - $ref: "#/components/parameters/catalogItemId"
+      responses:
+        "204": { description: Ítem eliminado }
+
+  /playlists/{playlistId}/items/order:
+    patch:
+      tags: [Playlists]
+      summary: Reordenar ítems de la playlist (RF-C4)
+      parameters:
+        - $ref: "#/components/parameters/playlistId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                orderedCatalogItemIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        "200": { description: Orden actualizado }
+
+  /catalog-items/{catalogItemId}/claims:
+    post:
+      tags: [Rights]
+      summary: Registrar una reclamación de derechos (RF-C5)
+      description: Emite el evento `rights.claim.created`.
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [claimantId, reason]
+              properties:
+                claimantId: { type: string, format: uuid }
+                reason: { type: string }
+      responses:
+        "201":
+          description: Reclamación creada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RightsClaim" }
+
+  /claims/{claimId}/resolve:
+    post:
+      tags: [Rights]
+      summary: Resolver una reclamación (RF-C5)
+      description: >
+        Resuelve como `accepted` (puede restringir el contenido),
+        `disputed` o `withdrawn`. Emite `rights.claim.resolved`.
+      parameters:
+        - $ref: "#/components/parameters/claimId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution]
+              properties:
+                resolution:
+                  type: string
+                  enum: [accepted, disputed, withdrawn]
+      responses:
+        "200":
+          description: Reclamación resuelta
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RightsClaim" }
+
+  /catalog-items/{catalogItemId}/restrictions:
+    post:
+      tags: [Policy]
+      summary: Aplicar una restricción de contenido (RF-C6)
+      description: Emite el evento `catalog.restriction.applied`.
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [age_gate, geo_block, demonetized, takedown]
+                reason: { type: string }
+                countries:
+                  type: array
+                  items: { type: string }
+      responses:
+        "201":
+          description: Restricción aplicada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PolicyRestriction" }
+
+  /catalog-items/{catalogItemId}/restrictions/{restrictionId}/lift:
+    post:
+      tags: [Policy]
+      summary: Levantar una restricción (RF-C6)
+      description: Emite el evento `catalog.restriction.lifted`.
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+        - name: restrictionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Restricción levantada }
+
+  /catalog-items/{catalogItemId}/policy-status:
+    get:
+      tags: [Policy]
+      summary: Consultar el estado de moderación/política actual (RF-C6)
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      responses:
+        "200":
+          description: Estado actual y restricciones activas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  activeRestrictions:
+                    type: array
+                    items: { $ref: "#/components/schemas/PolicyRestriction" }
+
+  /catalog-items/{catalogItemId}/policy-history:
+    get:
+      tags: [Policy]
+      summary: Consultar el historial de estado de política (RF-C6)
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      responses:
+        "200":
+          description: Historial completo de restricciones
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PolicyRestriction" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    channelId:
+      name: channelId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    catalogItemId:
+      name: catalogItemId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    playlistId:
+      name: playlistId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    claimId:
+      name: claimId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    page:
+      name: page
+      in: query
+      schema: { type: integer, default: 1 }
+    pageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, default: 20, maximum: 100 }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
+
+    Channel:
+      type: object
+      properties:
+        channelId: { type: string, format: uuid }
+        creatorId: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        imageUrl: { type: string, format: uri }
+        createdAt: { type: string, format: date-time }
+
+    CatalogItem:
+      type: object
+      description: >
+        El video como ÍTEM DE CATÁLOGO (metadata editorial), distinto del
+        VideoAsset técnico del contexto de Publicación.
+      properties:
+        catalogItemId: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        videoAssetId:
+          type: string
+          format: uuid
+          description: Referencia al asset técnico en Publicación (no se duplica su modelo)
+        title: { type: string }
+        description: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        category: { type: string }
+        thumbnailUrl: { type: string, format: uri }
+        status:
+          type: string
+          enum: [draft, published, unpublished]
+        createdAt: { type: string, format: date-time }
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    CatalogItemPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CatalogItem" }
+        page: { type: integer }
+        pageSize: { type: integer }
+        totalItems: { type: integer }
+
+    VisibilityResult:
+      type: object
+      properties:
+        catalogItemId: { type: string, format: uuid }
+        visible: { type: boolean }
+        reason:
+          type: string
+          description: Motivo si no es visible (ej. "geo_blocked", "age_restricted", "unpublished")
+          nullable: true
+
+    Playlist:
+      type: object
+      properties:
+        playlistId: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        title: { type: string }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/PlaylistItem" }
+
+    PlaylistItem:
+      type: object
+      properties:
+        catalogItemId: { type: string, format: uuid }
+        position: { type: integer }
+
+    RightsClaim:
+      type: object
+      properties:
+        claimId: { type: string, format: uuid }
+        catalogItemId: { type: string, format: uuid }
+        claimantId: { type: string, format: uuid }
+        reason: { type: string }
+        status:
+          type: string
+          enum: [open, accepted, disputed, withdrawn]
+        createdAt: { type: string, format: date-time }
+
+    PolicyRestriction:
+      type: object
+      properties:
+        restrictionId: { type: string, format: uuid }
+        catalogItemId: { type: string, format: uuid }
+        type:
+          type: string
+          enum: [age_gate, geo_block, demonetized, takedown]
+        reason: { type: string }
+        countries:
+          type: array
+          items: { type: string }
+        status:
+          type: string
+          enum: [active, lifted]
+        appliedAt: { type: string, format: date-time }
+        liftedAt:
+          type: string
+          format: date-time
+          nullable: true
