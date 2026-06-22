@@ -1,0 +1,592 @@
+openapi: 3.0.3
+info:
+  title: Audiencia, Comunidad y Engagement
+  version: "1.0.0"
+  description: >
+    Bounded context responsable de la relación SOCIAL entre usuarios,
+    creadores y contenido: suscripciones, reacciones, comentarios,
+    notificaciones, historial personal y posts de comunidad.
+
+    "Suscripción" aquí es una relación social de seguimiento (como seguir
+    a alguien en redes sociales), NO una suscripción de pago — eso es
+    Premium/membresías y vive en el contexto de Monetización.
+
+    Este contexto valida que el contenido/canal referenciado exista
+    (vía `catalogItemId`/`channelId`), pero no duplica la metadata
+    editorial completa de Catálogo.
+
+tags:
+  - name: Subscriptions
+    description: Suscripciones a canales (RF-A1)
+  - name: Reactions
+    description: Likes/dislikes (RF-A2)
+  - name: Comments
+    description: Comentarios y respuestas (RF-A3)
+  - name: Notifications
+    description: Notificaciones (RF-A4)
+  - name: History
+    description: Historial y listas personales (RF-A5)
+  - name: CommunityPosts
+    description: Posts de comunidad del canal (RF-A6)
+
+servers:
+  - url: https://api.youtube-clone.internal/audiencia/v1
+
+security:
+  - bearerAuth: []
+
+paths:
+  /subscriptions:
+    post:
+      tags: [Subscriptions]
+      summary: Seguir un canal (RF-A1)
+      description: Emite el evento `audience.user.subscribed`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, channelId]
+              properties:
+                userId: { type: string, format: uuid }
+                channelId: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Suscripción creada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Subscription" }
+
+  /users/{userId}/subscriptions/{channelId}:
+    delete:
+      tags: [Subscriptions]
+      summary: Dejar de seguir un canal (RF-A1)
+      description: Emite el evento `audience.user.unsubscribed`.
+      parameters:
+        - $ref: "#/components/parameters/userId"
+        - $ref: "#/components/parameters/channelId"
+      responses:
+        "204": { description: Suscripción eliminada }
+
+  /users/{userId}/subscriptions:
+    get:
+      tags: [Subscriptions]
+      summary: Listar canales seguidos por un usuario (RF-A1)
+      parameters:
+        - $ref: "#/components/parameters/userId"
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Listado de canales seguidos
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Subscription" }
+
+  /channels/{channelId}/subscribers-count:
+    get:
+      tags: [Subscriptions]
+      summary: Conteo de suscriptores de un canal (RF-A1)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      responses:
+        "200":
+          description: Conteo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channelId: { type: string, format: uuid }
+                  subscriberCount: { type: integer }
+
+  /catalog-items/{catalogItemId}/reactions:
+    post:
+      tags: [Reactions]
+      summary: Expresar una reacción a un contenido (RF-A2)
+      description: Emite el evento `audience.reaction.registered`.
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, type]
+              properties:
+                userId: { type: string, format: uuid }
+                type: { type: string, enum: [like, dislike] }
+      responses:
+        "201":
+          description: Reacción registrada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reaction" }
+    delete:
+      tags: [Reactions]
+      summary: Eliminar la reacción previa del usuario autenticado (RF-A2)
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      responses:
+        "204": { description: Reacción eliminada }
+
+  /catalog-items/{catalogItemId}/reactions/summary:
+    get:
+      tags: [Reactions]
+      summary: Totales agregados de reacciones por contenido (RF-A2)
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      responses:
+        "200":
+          description: Totales
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  likes: { type: integer }
+                  dislikes: { type: integer }
+
+  /catalog-items/{catalogItemId}/comments:
+    post:
+      tags: [Comments]
+      summary: Publicar un comentario en un contenido (RF-A3)
+      description: Emite el evento `audience.comment.published`.
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, text]
+              properties:
+                userId: { type: string, format: uuid }
+                text: { type: string }
+      responses:
+        "201":
+          description: Comentario creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Comment" }
+    get:
+      tags: [Comments]
+      summary: Listar comentarios de un contenido (RF-A3)
+      parameters:
+        - $ref: "#/components/parameters/catalogItemId"
+        - name: sort
+          in: query
+          schema: { type: string, enum: [recent, top], default: top }
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Comentarios paginados
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Comment" }
+
+  /comments/{commentId}/replies:
+    post:
+      tags: [Comments]
+      summary: Responder a un comentario (thread) (RF-A3)
+      parameters:
+        - $ref: "#/components/parameters/commentId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, text]
+              properties:
+                userId: { type: string, format: uuid }
+                text: { type: string }
+      responses:
+        "201":
+          description: Respuesta creada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Comment" }
+
+  /comments/{commentId}:
+    patch:
+      tags: [Comments]
+      summary: Editar un comentario propio (RF-A3)
+      parameters:
+        - $ref: "#/components/parameters/commentId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text: { type: string }
+      responses:
+        "200":
+          description: Comentario actualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Comment" }
+    delete:
+      tags: [Comments]
+      summary: Eliminar un comentario propio (RF-A3)
+      description: Emite el evento `audience.comment.deleted`.
+      parameters:
+        - $ref: "#/components/parameters/commentId"
+      responses:
+        "204": { description: Comentario eliminado }
+
+  /comments/{commentId}/pin:
+    post:
+      tags: [Comments]
+      summary: Fijar un comentario destacado (solo el creador del canal) (RF-A3)
+      parameters:
+        - $ref: "#/components/parameters/commentId"
+      responses:
+        "200": { description: Comentario fijado }
+
+  /comments/{commentId}/report:
+    post:
+      tags: [Comments]
+      summary: Reportar un comentario inapropiado (RF-A3)
+      parameters:
+        - $ref: "#/components/parameters/commentId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reporterId: { type: string, format: uuid }
+                reason: { type: string }
+      responses:
+        "201": { description: Reporte registrado }
+
+  /users/{userId}/notifications:
+    get:
+      tags: [Notifications]
+      summary: Listar notificaciones de un usuario (RF-A4)
+      parameters:
+        - $ref: "#/components/parameters/userId"
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Notificaciones paginadas
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Notification" }
+
+  /notifications/{notificationId}/read:
+    post:
+      tags: [Notifications]
+      summary: Marcar una notificación como leída (RF-A4)
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Marcada como leída }
+
+  /users/{userId}/notification-preferences:
+    get:
+      tags: [Notifications]
+      summary: Consultar preferencias de notificación (RF-A4)
+      parameters:
+        - $ref: "#/components/parameters/userId"
+      responses:
+        "200":
+          description: Preferencias
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationPreferences" }
+    put:
+      tags: [Notifications]
+      summary: Configurar preferencias de notificación (RF-A4)
+      parameters:
+        - $ref: "#/components/parameters/userId"
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotificationPreferences" }
+      responses:
+        "200": { description: Preferencias actualizadas }
+
+  /users/{userId}/history:
+    get:
+      tags: [History]
+      summary: Consultar historial de visualización (RF-A5)
+      parameters:
+        - $ref: "#/components/parameters/userId"
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Historial paginado
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/HistoryEntry" }
+    delete:
+      tags: [History]
+      summary: Borrar historial de visualización (RF-A5)
+      parameters:
+        - $ref: "#/components/parameters/userId"
+      responses:
+        "204": { description: Historial borrado }
+
+  /users/{userId}/watch-later:
+    get:
+      tags: [History]
+      summary: Listar contenido guardado para ver después (RF-A5)
+      parameters:
+        - $ref: "#/components/parameters/userId"
+      responses:
+        "200":
+          description: Listado
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    catalogItemId: { type: string, format: uuid }
+                    savedAt: { type: string, format: date-time }
+    post:
+      tags: [History]
+      summary: Guardar contenido para ver después (RF-A5)
+      parameters:
+        - $ref: "#/components/parameters/userId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [catalogItemId]
+              properties:
+                catalogItemId: { type: string, format: uuid }
+      responses:
+        "201": { description: Guardado }
+
+  /users/{userId}/watch-later/{catalogItemId}:
+    delete:
+      tags: [History]
+      summary: Quitar contenido de "ver después" (RF-A5)
+      parameters:
+        - $ref: "#/components/parameters/userId"
+        - $ref: "#/components/parameters/catalogItemId"
+      responses:
+        "204": { description: Eliminado }
+
+  /channels/{channelId}/posts:
+    post:
+      tags: [CommunityPosts]
+      summary: Publicar un post de comunidad (RF-A6)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CommunityPostInput" }
+      responses:
+        "201":
+          description: Post creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommunityPost" }
+    get:
+      tags: [CommunityPosts]
+      summary: Listar posts de comunidad de un canal (RF-A6)
+      parameters:
+        - $ref: "#/components/parameters/channelId"
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Posts paginados
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CommunityPost" }
+
+  /posts/{postId}/comments:
+    post:
+      tags: [CommunityPosts]
+      summary: Comentar un post de comunidad (RF-A6)
+      parameters:
+        - name: postId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, text]
+              properties:
+                userId: { type: string, format: uuid }
+                text: { type: string }
+      responses:
+        "201": { description: Comentario creado }
+
+  /posts/{postId}/reactions:
+    post:
+      tags: [CommunityPosts]
+      summary: Reaccionar a un post de comunidad (RF-A6)
+      parameters:
+        - name: postId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, type]
+              properties:
+                userId: { type: string, format: uuid }
+                type: { type: string, enum: [like, dislike] }
+      responses:
+        "201": { description: Reacción registrada }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    userId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    channelId:
+      name: channelId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    catalogItemId:
+      name: catalogItemId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    commentId:
+      name: commentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    page:
+      name: page
+      in: query
+      schema: { type: integer, default: 1 }
+    pageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, default: 20, maximum: 100 }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+
+    Subscription:
+      type: object
+      properties:
+        userId: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        subscribedAt: { type: string, format: date-time }
+
+    Reaction:
+      type: object
+      properties:
+        reactionId: { type: string, format: uuid }
+        catalogItemId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        type: { type: string, enum: [like, dislike] }
+        createdAt: { type: string, format: date-time }
+
+    Comment:
+      type: object
+      properties:
+        commentId: { type: string, format: uuid }
+        catalogItemId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        parentCommentId:
+          type: string
+          format: uuid
+          nullable: true
+        text: { type: string }
+        pinned: { type: boolean, default: false }
+        createdAt: { type: string, format: date-time }
+        editedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    Notification:
+      type: object
+      properties:
+        notificationId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        type:
+          type: string
+          enum: [new_video, comment_reply, mention]
+        payload: { type: object, additionalProperties: true }
+        read: { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    NotificationPreferences:
+      type: object
+      properties:
+        userId: { type: string, format: uuid }
+        newVideoFromSubscriptions: { type: boolean, default: true }
+        commentReplies: { type: boolean, default: true }
+
+    HistoryEntry:
+      type: object
+      properties:
+        catalogItemId: { type: string, format: uuid }
+        viewedAt: { type: string, format: date-time }
+
+    CommunityPostInput:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string }
+        imageUrl: { type: string, format: uri, nullable: true }
+        poll:
+          type: object
+          nullable: true
+          properties:
+            options:
+              type: array
+              items: { type: string }
+
+    CommunityPost:
+      type: object
+      properties:
+        postId: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        text: { type: string }
+        imageUrl: { type: string, format: uri, nullable: true }
+        createdAt: { type: string, format: date-time }
