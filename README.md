@@ -104,9 +104,9 @@ targeting, decisión de entrega de anuncios y facturación a anunciantes.
 
 > **Nota:** Este diagrama no fue solicitado explícitamente en el enunciado.
 > Cada bounded context ya incluye su propio diagrama de secuencia con
-> integración a otros contextos (entregable obligatorio). El escenario
-> integrador fue incluido como aporte adicional para mostrar el flujo
-> completo de punta a punta cruzando los 6 contextos de forma unificada.
+> integración a otros contextos. El escenario integrador fue incluido
+> como aporte adicional para mostrar el flujo completo de punta a punta
+> cruzando los 6 contextos de forma unificada.
 
 El archivo `escenario-integrador.md` muestra el flujo completo de
 punta a punta cruzando los 6 contextos:
