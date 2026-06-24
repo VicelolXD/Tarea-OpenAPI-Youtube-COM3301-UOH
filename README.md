@@ -7,8 +7,8 @@ aplicando **Domain-Driven Design (DDD)** y especificaciones **OpenAPI 3.0**.
 
 ## Integrantes
 
-- Vicente [Apellido]
-- [Nombre compañero] [Apellido]
+- Vicente Sánchez
+- Benjamin Gutierrez
 
 **Curso:** Análisis y Diseño de Software — COM3301  
 **Universidad:** Universidad de O'Higgins  
