@@ -1,0 +1,63 @@
+¿Qué es esto en general?
+Este proyecto modela YouTube como un sistema distribuido dividido en 6 bounded contexts independientes, cada uno con su propia API OpenAPI, su propio modelo de datos y sus propias responsabilidades. Lo que están viendo ahora es la primera mitad: Audiencia, Catálogo y Descubrimiento.
+La pregunta de fondo que guía todo el diseño es: ¿cómo evitar que un cambio en una parte rompa las demás? La respuesta es esta arquitectura: cada contexto es autónomo, se comunica por eventos asíncronos o consultas síncronas puntuales, y nunca comparte su modelo de datos interno con otro.
+
+Contexto 1 — Audiencia, Comunidad y Engagement
+¿Qué responsabilidad tiene este contexto?
+Es el contexto social del sistema. Gestiona todo lo que ocurre entre usuarios, creadores y contenido a nivel de interacción humana: suscripciones, likes/dislikes, comentarios, notificaciones, historial personal y posts de comunidad.
+Una distinción clave que hay que saber defender:
+"Suscripción" aquí significa seguir a un creador — como seguir en Instagram. NO es una suscripción de pago (eso es membresía y vive en Monetización). Si el profesor pregunta por qué no están juntas, la respuesta es: son conceptos de negocio distintos. Una es social, la otra es financiera. Tienen reglas, actores y ciclos de vida completamente diferentes.
+Endpoints principales y por qué existen:
+POST /subscriptions — un usuario sigue un canal. Emite el evento audience.user.subscribed que Monetización puede escuchar para saber que hay un nuevo seguidor (útil para membresías).
+POST /catalog-items/{catalogItemId}/reactions — registra un like o dislike. Emite audience.reaction.registered. Nótese que el endpoint recibe un catalogItemId (referencia a Catálogo) y no un videoAssetId (referencia a Publicación) — porque la reacción es sobre el contenido editorial, no sobre el archivo técnico.
+POST /catalog-items/{catalogItemId}/comments — publica un comentario. Emite audience.comment.published. Tiene variante de respuesta en hilo (/comments/{commentId}/replies), edición (PATCH), eliminación (DELETE), fijado por el creador (/pin) y reporte (/report).
+GET /users/{userId}/notifications — lista notificaciones con soporte de filtro unreadOnly. Las notificaciones se generan automáticamente cuando Catálogo emite catalog.item.published (nuevo video de un canal seguido).
+GET /users/{userId}/history — historial personal de visualización, con opción de borrado total. Este dato viene de escuchar el evento sesion_reproduccion.completada que emite Publicación.
+GET/POST/DELETE /users/{userId}/watch-later — gestión de la lista "ver después", totalmente dentro de este contexto, sin tocar a Catálogo.
+Autenticación: todos los endpoints usan bearerAuth (JWT), es decir, el usuario debe estar autenticado. Esto está declarado a nivel global en el YAML con security: [bearerAuth: []].
+
+Contexto 2 — Catálogo Editorial y Derechos
+¿Qué responsabilidad tiene?
+Define qué contenido existe públicamente y bajo qué reglas puede verse. Es el árbitro de visibilidad de todo el sistema. Aquí "video" es un CatalogItem — metadata editorial (título, descripción, tags, miniatura) más reglas de visibilidad. NO es el archivo técnico, ese vive en Publicación.
+La frontera más importante de todo el proyecto:
+CatalogItem.videoAssetId es solo un puntero — una cadena de texto UUID. Catálogo no tiene el modelo VideoAsset ni conoce sus calidades, bitrate ni URL de stream. Solo sabe que ese ID existe. Eso es lo que garantiza que si Publicación cambia su modelo interno, Catálogo no se rompe.
+Endpoints principales:
+POST /catalog-items — crea el ítem editorial vinculándolo al asset técnico por videoAssetId. Se crea en estado draft. Normalmente se dispara automáticamente al recibir el evento video.asset.ready_for_publishing de Publicación, pero también puede crearse manualmente antes de que el asset esté listo.
+POST /catalog-items/{catalogItemId}/publish — publica el contenido. Emite catalog.item.published, que es el evento más importante del sistema: lo consumen Descubrimiento (para indexar), Monetización (para habilitar ingresos) y Publicidad (para activar el inventario). Tiene respuesta 409 Conflict si el ítem no puede publicarse (metadata incompleta o restricción activa) — ese es el manejo de contingencia.
+POST /catalog-items/{catalogItemId}/unpublish — despublica. Emite catalog.item.unpublished, y los contextos que lo escuchan reaccionan: Descubrimiento lo elimina del índice, Publicidad lo retira del inventario.
+GET /catalog-items/{catalogItemId}/visibility — consulta síncrona de integración. Este es el endpoint que otros contextos (Descubrimiento, Audiencia) llaman antes de mostrar contenido para validar si es visible según país y edad del viewer. Retorna VisibilityResult con visible: boolean y reason si no es visible (geo_blocked, age_restricted, unpublished).
+POST /catalog-items/{catalogItemId}/restrictions — aplica una restricción de política (age_gate, geo_block, demonetized, takedown). Emite catalog.restriction.applied. La contingencia es que una restricción activa bloquea la publicación (409 en /publish).
+POST /claims + POST /claims/{claimId}/resolve — gestión de reclamaciones de derechos. Una reclamación accepted puede disparar automáticamente una restricción takedown sobre el contenido.
+
+Contexto 3 — Descubrimiento y Personalización
+¿Qué responsabilidad tiene?
+Ayuda al usuario a encontrar contenido relevante: búsqueda, feeds personalizados, relacionados, tendencias y exploración por categoría. Aquí "video" es un RankedItem — una representación mínima con catalogItemId y score. No duplica título, descripción ni miniatura. Si el cliente necesita esa metadata, la pide directamente a Catálogo.
+El punto de diseño clave: este contexto NUNCA decide si un contenido es visible — siempre consulta a Catálogo vía GET /catalog-items/{catalogItemId}/visibility antes de mostrar resultados. Descubrimiento sabe dónde está el contenido, Catálogo decide si puede verse.
+Endpoints principales:
+GET /search?q=... — búsqueda por texto libre con filtros de duración, fecha y orden (relevancia, fecha, popularidad). Retorna SearchResultPage con videos y canales rankeados, paginado.
+GET /search/suggestions?q=... — autocompletado mientras el usuario escribe. Retorna un array simple de strings.
+GET /feed — feed personalizado de inicio. Acepta userId (usuario autenticado) o sessionId (usuario anónimo), lo que permite personalización progresiva.
+GET /catalog-items/{catalogItemId}/related — contenido relacionado a un video específico. Retorna array de RankedItem.
+GET /trending — tendencias filtradas por región y categoría.
+POST /signals/impressions y POST /signals/clicks — captura de señales de interacción del usuario (qué vio, qué clickeó, desde dónde). Estas señales alimentan el algoritmo de ranking y personalización internamente. Son fire and forget — responden 201 sin payload, porque no importa la respuesta, solo importa que el dato llegó.
+POST /index/entries — indexa un contenido. Se dispara al consumir el evento catalog.item.published de Catálogo. También expuesto para reindexación manual.
+DELETE /index/entries/{catalogItemId} — elimina del índice al consumir catalog.item.unpublished o catalog.restriction.applied.
+
+Lo que une los 3 contextos: el flujo de integración
+Si el profesor pregunta cómo se integran estos 3, la respuesta es:
+
+Catálogo publica un video
+→ emite catalog.item.published
+→ Descubrimiento lo indexa (POST /index/entries)
+→ Audiencia notifica a suscriptores (genera Notification)
+
+Viewer abre la app
+→ Descubrimiento entrega el feed (GET /feed)
+→ Viewer hace click → POST /signals/clicks
+→ Viewer va al video → Descubrimiento consulta visibilidad a Catálogo
+  (GET /catalog-items/{id}/visibility → { visible: true })
+→ Viewer da like → Audiencia registra reacción
+  (POST /catalog-items/{id}/reactions) → emite audience.reaction.registered
+→ Descubrimiento actualiza el score del RankedItem con esa señal
+
+Cada flecha de evento es asíncrona. La única flecha síncrona es la validación de visibilidad, porque Descubrimiento necesita la respuesta antes de mostrar el contenido.
